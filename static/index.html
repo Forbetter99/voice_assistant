@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>语音助手</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f5f5f7;
+    color: #1d1d1f;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    -webkit-user-select: none;
+    user-select: none;
+}
+.header {
+    padding: 20px 16px 12px;
+    text-align: center;
+    background: #f5f5f7;
+}
+.header h1 {
+    font-size: 20px;
+    font-weight: 600;
+    color: #1d1d1f;
+}
+.header .sub {
+    font-size: 13px;
+    color: #86868b;
+    margin-top: 2px;
+}
+
+#conversation {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    scroll-behavior: smooth;
+}
+.msg {
+    max-width: 82%;
+    padding: 12px 16px;
+    border-radius: 18px;
+    font-size: 15px;
+    line-height: 1.5;
+    word-wrap: break-word;
+    animation: fadeIn 0.3s ease;
+}
+.msg.user {
+    background: #007aff;
+    color: #fff;
+    align-self: flex-end;
+    border-bottom-right-radius: 4px;
+}
+.msg.assistant {
+    background: #e8e8ed;
+    color: #1d1d1f;
+    align-self: flex-start;
+    border-bottom-left-radius: 4px;
+}
+.msg.assistant .intent-tag {
+    display: inline-block;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: #d1d1d6;
+    color: #636366;
+    margin-bottom: 6px;
+}
+.msg.assistant .intent-tag.high {
+    background: #34c759;
+    color: #fff;
+}
+.msg.assistant .intent-tag.medium {
+    background: #ff9500;
+    color: #fff;
+}
+.msg.assistant .intent-tag.low {
+    background: #ff3b30;
+    color: #fff;
+}
+.msg.system {
+    background: transparent;
+    color: #86868b;
+    text-align: center;
+    align-self: center;
+    font-size: 13px;
+    padding: 4px 8px;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+@keyframes pulse {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.08); opacity: 0.7; }
+}
+@keyframes ripple {
+    0% { box-shadow: 0 0 0 0 rgba(255, 59, 48, 0.4); }
+    100% { box-shadow: 0 0 0 30px rgba(255, 59, 48, 0); }
+}
+@keyframes thinking-dot {
+    0%, 80%, 100% { opacity: 0; }
+    40% { opacity: 1; }
+}
+
+.footer {
+    padding: 12px 16px 32px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+}
+.record-btn {
+    width: 72px;
+    height: 72px;
+    border-radius: 50%;
+    border: none;
+    background: #007aff;
+    color: #fff;
+    font-size: 28px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    box-shadow: 0 4px 14px rgba(0, 122, 255, 0.3);
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+}
+.record-btn:active, .record-btn.recording {
+    background: #ff3b30;
+    transform: scale(1.1);
+    box-shadow: 0 4px 20px rgba(255, 59, 48, 0.4);
+}
+.record-btn.recording {
+    animation: ripple 1.2s ease-out infinite;
+}
+.record-btn:disabled {
+    opacity: 0.5;
+    transform: none;
+    box-shadow: none;
+}
+.status-text {
+    font-size: 13px;
+    color: #86868b;
+    min-height: 18px;
+    transition: color 0.2s;
+}
+.status-text.recording {
+    color: #ff3b30;
+    font-weight: 500;
+}
+.status-text.processing {
+    color: #ff9500;
+    font-weight: 500;
+}
+.thinking {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    padding: 8px 0;
+}
+.thinking span {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #86868b;
+    animation: thinking-dot 1.4s infinite;
+}
+.thinking span:nth-child(2) { animation-delay: 0.16s; }
+.thinking span:nth-child(3) { animation-delay: 0.32s; }
+
+.empty-state {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #c7c7cc;
+    gap: 8px;
+}
+.empty-state .icon { font-size: 48px; }
+.empty-state .text { font-size: 15px; }
+
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<div class="header">
+    <h1>语音助手</h1>
+    <div class="sub">按住按钮说话 · DeepSeek 驱动</div>
+</div>
+
+<div id="conversation">
+    <div class="empty-state" id="emptyState">
+        <div class="icon">🎤</div>
+        <div class="text">点击下方按钮开始对话</div>
+    </div>
+</div>
+
+<div class="footer">
+    <button class="record-btn" id="recordBtn">🎤</button>
+    <div class="status-text" id="statusText">按住说话</div>
+</div>
+
+<script>
+// ===== Audio Recording =====
+let audioContext = null;
+let mediaStream = null;
+let scriptProcessor = null;
+let mediaSource = null;
+let audioChunks = [];
+let isRecording = false;
+let isProcessing = false;
+let sessionId = Date.now().toString(36);
+
+const recordBtn = document.getElementById('recordBtn');
+const statusText = document.getElementById('statusText');
+const conversation = document.getElementById('conversation');
+const emptyState = document.getElementById('emptyState');
+
+// === WAV Encoder ===
+function writeString(view, offset, str) {
+    for (let i = 0; i < str.length; i++)
+        view.setUint8(offset + i, str.charCodeAt(i));
+}
+
+function encodeWAV(samples, sampleRate) {
+    const numChannels = 1;
+    const bitsPerSample = 16;
+    const byteRate = sampleRate * numChannels * bitsPerSample / 8;
+    const blockAlign = numChannels * bitsPerSample / 8;
+    const dataSize = samples.length * blockAlign;
+    const buffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buffer);
+
+    writeString(view, 0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeString(view, 8, 'WAVE');
+    writeString(view, 12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, byteRate, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bitsPerSample, true);
+    writeString(view, 36, 'data');
+    view.setUint32(40, dataSize, true);
+
+    let offset = 44;
+    for (let i = 0; i < samples.length; i++) {
+        const s = Math.max(-1, Math.min(1, samples[i]));
+        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+        offset += 2;
+    }
+    return new Blob([buffer], { type: 'audio/wav' });
+}
+
+// === Recording ===
+async function startRecording() {
+    if (isProcessing || isRecording) return;
+
+    try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        mediaSource = audioContext.createMediaStreamSource(mediaStream);
+        scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+        audioChunks = [];
+
+        scriptProcessor.onaudioprocess = (e) => {
+            if (isRecording) {
+                const data = e.inputBuffer.getChannelData(0);
+                audioChunks.push(new Float32Array(data));
+            }
+        };
+
+        mediaSource.connect(scriptProcessor);
+        scriptProcessor.connect(audioContext.destination);
+
+        isRecording = true;
+        recordBtn.classList.add('recording');
+        statusText.textContent = '录音中... 松开发送';
+        statusText.className = 'status-text recording';
+    } catch (err) {
+        console.error('录音启动失败:', err);
+        statusText.textContent = '麦克风访问被拒绝';
+        statusText.className = 'status-text';
+        resetRecording();
+    }
+}
+
+async function stopRecording() {
+    if (!isRecording) return;
+    isRecording = false;
+
+    recordBtn.classList.remove('recording');
+    statusText.textContent = '处理中...';
+    statusText.className = 'status-text processing';
+    recordBtn.disabled = true;
+
+    const allSamples = concatenateSamples(audioChunks);
+    const wavBlob = encodeWAV(allSamples, audioContext.sampleRate);
+
+    resetRecording();
+    await sendAudio(wavBlob);
+}
+
+function cancelRecording() {
+    if (!isRecording) return;
+    isRecording = false;
+    recordBtn.classList.remove('recording');
+    statusText.textContent = '已取消';
+    statusText.className = 'status-text';
+    resetRecording();
+    setTimeout(() => {
+        if (!isProcessing) {
+            statusText.textContent = '按住说话';
+        }
+    }, 1000);
+}
+
+function resetRecording() {
+    if (scriptProcessor) {
+        scriptProcessor.disconnect();
+        scriptProcessor = null;
+    }
+    if (mediaSource) {
+        mediaSource.disconnect();
+        mediaSource = null;
+    }
+    if (audioContext) {
+        audioContext.close().catch(() => {});
+        audioContext = null;
+    }
+    if (mediaStream) {
+        mediaStream.getTracks().forEach(t => t.stop());
+        mediaStream = null;
+    }
+    audioChunks = [];
+}
+
+function concatenateSamples(chunks) {
+    let totalLen = 0;
+    for (const c of chunks) totalLen += c.length;
+    const result = new Float32Array(totalLen);
+    let offset = 0;
+    for (const c of chunks) {
+        result.set(c, offset);
+        offset += c.length;
+    }
+    return result;
+}
+
+// === API ===
+async function sendAudio(wavBlob) {
+    isProcessing = true;
+    emptyState.classList.add('hidden');
+
+    const thinkingMsg = addMessage('assistant', '<div class="thinking"><span></span><span></span><span></span></div>');
+    thinkingMsg.querySelector('.thinking').id = 'thinkingIndicator';
+
+    try {
+        const formData = new FormData();
+        formData.append('audio', wavBlob, 'recording.wav');
+
+        const resp = await fetch('/api/voice', { method: 'POST', body: formData });
+        const data = await resp.json();
+
+        thinkingMsg.remove();
+
+        if (data.text) {
+            addMessage('user', data.text);
+        } else {
+            addMessage('user', '🎤');
+        }
+
+        if (data.response) {
+            const intentTag = data.intent !== 'chat'
+                ? `<span class="intent-tag ${data.confidence > 0.8 ? 'high' : data.confidence > 0.5 ? 'medium' : 'low'}">${data.intent}</span>`
+                : '';
+            addMessage('assistant', intentTag + data.response);
+
+            if (data.audio) {
+                playAudio(data.audio);
+            } else {
+                speakWithBrowser(data.response);
+            }
+        }
+    } catch (err) {
+        console.error('请求失败:', err);
+        thinkingMsg.remove();
+        addMessage('system', '连接失败，请检查网络');
+    }
+
+    isProcessing = false;
+    recordBtn.disabled = false;
+    statusText.textContent = '按住说话';
+    statusText.className = 'status-text';
+}
+
+// === UI ===
+function addMessage(role, content) {
+    const div = document.createElement('div');
+    div.className = `msg ${role}`;
+    div.innerHTML = content;
+    conversation.appendChild(div);
+    conversation.scrollTop = conversation.scrollHeight;
+    return div;
+}
+
+function playAudio(base64Data) {
+    try {
+        const audio = new Audio('data:audio/mp3;base64,' + base64Data);
+        audio.play().catch(err => console.warn('音频播放失败:', err));
+    } catch (err) {
+        console.warn('音频播放出错:', err);
+    }
+}
+
+function speakWithBrowser(text) {
+    if ('speechSynthesis' in window) {
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = 'zh-CN';
+        utterance.rate = 1.0;
+        speechSynthesis.speak(utterance);
+    }
+}
+
+// === Event Listeners ===
+let pressTimer = null;
+
+recordBtn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    pressTimer = setTimeout(() => {
+        startRecording();
+    }, 100);
+});
+
+recordBtn.addEventListener('pointerup', (e) => {
+    e.preventDefault();
+    if (pressTimer) {
+        clearTimeout(pressTimer);
+        pressTimer = null;
+    }
+    if (isRecording) stopRecording();
+});
+
+recordBtn.addEventListener('pointerleave', (e) => {
+    if (pressTimer) {
+        clearTimeout(pressTimer);
+        pressTimer = null;
+    }
+    if (isRecording) cancelRecording();
+});
+
+// Touch devices: prevent context menu on long press
+recordBtn.addEventListener('contextmenu', (e) => e.preventDefault());
+
+// Keyboard shortcut (Space bar)
+document.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.code === 'Space' && !e.repeat && !isProcessing) {
+        e.preventDefault();
+        startRecording();
+    }
+});
+document.addEventListener('keyup', (e) => {
+    if (e.code === 'Space' && isRecording) {
+        e.preventDefault();
+        stopRecording();
+    }
+});
+
+console.log('语音助手已加载，会话ID:', sessionId);
+</script>
+</body>
+</html>
