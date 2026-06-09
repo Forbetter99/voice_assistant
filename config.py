@@ -19,9 +19,9 @@ class Config:
     SILENCE_DURATION = 1.5
 
     # STT
-    WHISPER_MODEL_SIZE = "tiny"  # tiny, base, small, medium, large
-    WHISPER_DEVICE = "cpu"
-    WHISPER_COMPUTE_TYPE = "int8"
+    WHISPER_MODEL_SIZE = "small"  # tiny, base, small, medium, large
+    WHISPER_DEVICE = "cuda"
+    WHISPER_COMPUTE_TYPE = "int8_float16"
 
     # TTS
     TTS_VOICE = "zh-CN-XiaoxiaoNeural"
