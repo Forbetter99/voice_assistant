@@ -6,6 +6,14 @@ import os
 import tempfile
 from datetime import datetime
 
+# Add CUDA 12 runtime DLLs to PATH
+_cuda_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "venv", "Lib", "site-packages", "nvidia", "cublas", "bin")
+if os.path.isdir(_cuda_path):
+    os.environ["PATH"] = _cuda_path + os.pathsep + os.environ.get("PATH", "")
+_cudnn_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "venv", "Lib", "site-packages", "nvidia", "cudnn", "bin")
+if os.path.isdir(_cudnn_path):
+    os.environ["PATH"] = _cudnn_path + os.pathsep + os.environ.get("PATH", "")
+
 import edge_tts
 import numpy as np
 import uvicorn
