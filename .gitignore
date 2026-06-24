@@ -1,4 +1,36 @@
-models/
+# Python
 __pycache__/
-logs/
+*.py[cod]
+*.egg-info/
+dist/
 venv/
+logs/
+
+# 环境 / IDE
+.env
+.venv
+.idea/
+.vscode/
+
+# 模型文件（大文件，不推送）
+models/SenseVoiceSmall/
+models/huggingface/
+models/torch/
+models/ollama/
+models/speaker_embedding.pt
+
+# 缓存文件
+*.pt
+*.bin
+*.onnx
+*.pth
+
+# 临时音频
+*.wav
+*.mp3
+
+# 生成代码
+generated/
+
+# Windows
+Thumbs.db
