@@ -75,21 +75,30 @@ class ASR:
     """基于 Paraformer-zh 的本地语音识别（中文准确率 1.95% CER）"""
 
     def __init__(self):
-        import torch
+        import torch, os
         device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        # 强制离线，不用 network 检查更新
+        os.environ.setdefault("MODELSCOPE_OFFLINE", "1")
+        # 本地缓存路径
+        local_path = os.path.join(
+            os.path.expanduser("~"), ".cache", "modelscope", "hub", "models",
+            "iic", "speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch"
+        )
+        if not os.path.exists(local_path):
+            local_path = "paraformer-zh"
+
         from funasr import AutoModel
         self.model = AutoModel(
-            model="paraformer-zh",
+            model=local_path,
             device=device,
             disable_update=True,
+            hub="ms",
         )
 
     def transcribe(self, audio: np.ndarray) -> str:
         audio_float = audio.astype(np.float32)
         result = self.model.generate(input=audio_float)
-        # result 格式: [{"text": "识别文字", "timestamp": [[...]]}]
         text = result[0]["text"] if result else ""
-        # Paraformer 偶尔会在字间加空格，去掉
         text = text.replace(" ", "").strip()
         return text
 
@@ -104,7 +113,9 @@ class LLM:
         self.max_turns = 10
         self.system_prompt = (
             "你是贾维斯(Jarvis)，一个智能语音助手。"
-            "你有以下工具可用：查天气、查时间、保存代码、打开网页、打开本地应用(如计算器、记事本等)。"
+            "你有以下工具可用：查天气、查时间、保存代码、打开网页、"
+            "打开本地应用(计算器/记事本等)、控制窗口(最小化/关闭/切换)、"
+            "系统操作(锁屏/音量/截图等)。"
             "需要时直接使用对应的工具。"
             "用户的问题可能是语音识别结果，如有错别字请自动修正。"
             "用中文回答，简洁自然。使用工具后请告知用户结果。"
@@ -189,16 +200,58 @@ class LLM:
                 "type": "function",
                 "function": {
                     "name": "open_app",
-                    "description": "打开 Windows 本地应用程序，如计算器、记事本、画图等",
+                    "description": "打开 Windows 本地应用程序（自动搜索，支持任何已安装软件），如 微信(WeChat)、QQ、浏览器(chrome/edge)、Word、Excel、VSCode、计算器、记事本等",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "app": {
                                 "type": "string",
-                                "description": "应用名称，支持：计算器、记事本、画图(画图工具)、命令提示符(cmd)、任务管理器、资源管理器、控制面板、截图工具、便签(sticky notes)、放大镜、录音机、时钟、设置"
+                                "description": "应用名称或关键词，如 微信、WeChat、QQ、QQ.exe、chrome、Word、VSCode、计算器、记事本 等"
                             }
                         },
                         "required": ["app"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "control_window",
+                    "description": "控制已打开的窗口，如最小化、关闭、切换等",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "description": "操作：minimize(最小化)、close(关闭窗口)、activate(切换/激活)、minimize_all(全部最小化)、show_desktop(显示桌面)"
+                            },
+                            "target": {
+                                "type": "string",
+                                "description": "目标窗口标题关键词（可选，如'浏览器'、'记事本'、'微信'）"
+                            }
+                        },
+                        "required": ["action"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "system_action",
+                    "description": "系统操作：控制音量、锁屏、关机、截图等",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "description": "操作：lock(锁屏)、screenshot(截图)、volume_up(音量增)、volume_down(音量减)、mute(静音)、unmute(取消静音)、shutdown(关机)、restart(重启)、sleep(睡眠)"
+                            },
+                            "value": {
+                                "type": "string",
+                                "description": "参数（可选），如音量增/减数字"
+                            }
+                        },
+                        "required": ["action"]
                     }
                 }
             },
@@ -246,52 +299,200 @@ class LLM:
             return f"打开浏览器失败: {e}"
 
     def _open_app(self, app: str) -> str:
-        """打开 Windows 本地应用程序"""
+        """打开 Windows 本地应用程序（自动搜索已安装软件）"""
         import subprocess, os
 
-        app_map = {
-            "计算器": "calc.exe",
-            "calculator": "calc.exe",
-            "记事本": "notepad.exe",
-            "notepad": "notepad.exe",
-            "画图": "mspaint.exe",
-            "画图工具": "mspaint.exe",
-            "命令提示符": "cmd.exe",
-            "cmd": "cmd.exe",
-            "任务管理器": "taskmgr.exe",
-            "task manager": "taskmgr.exe",
-            "资源管理器": "explorer.exe",
-            "文件资源管理器": "explorer.exe",
+        # 中文 → exe 名映射（Windows 注册的是 exe 名，不是中文名）
+        APP_MAP = {
+            "微信": "WeChat.exe", "wechat": "WeChat.exe",
+            "qq": "QQ.exe", "qq.exe": "QQ.exe",
+            "qq音乐": "QQMusic.exe",
+            "钉钉": "DingTalk.exe", "dingtalk": "DingTalk.exe",
+            "飞书": "Feishu.exe", "feishu": "Feishu.exe",
+            "腾讯会议": "wemeetapp.exe",
+            "chrome": "chrome.exe", "谷歌": "chrome.exe", "谷歌浏览器": "chrome.exe",
+            "edge": "msedge.exe", "浏览器": "msedge.exe", "microsoft edge": "msedge.exe",
+            "火狐": "firefox.exe", "firefox": "firefox.exe",
+            "vscode": "Code.exe", "vs code": "Code.exe", "visual studio code": "Code.exe",
+            "word": "WINWORD.EXE",
+            "excel": "EXCEL.EXE",
+            "ppt": "POWERPNT.EXE", "powerpoint": "POWERPNT.EXE",
+            "outlook": "OUTLOOK.EXE",
+            "wps": "wps.exe", "wps office": "wps.exe",
+            "steam": "steam.exe",
+            "网易云": "cloudmusic.exe", "网易云音乐": "cloudmusic.exe",
+            "百度网盘": "baidunetdisk.exe",
+            "迅雷": "thunder.exe",
+            "阿里云盘": "aDrive.exe",
+            "剪映": "CapCut.exe", "剪映专业版": "CapCut.exe",
+            "pycharm": "pycharm64.exe",
+            "idea": "idea64.exe",
+            "typora": "Typora.exe",
+            "xmind": "Xmind.exe",
+            "winrar": "WinRAR.exe",
+            "git": "git-bash.exe", "git bash": "git-bash.exe",
+            "计算器": "calc.exe", "calculator": "calc.exe",
+            "记事本": "notepad.exe", "notepad": "notepad.exe",
+            "画图": "mspaint.exe", "画图工具": "mspaint.exe",
+            "命令提示符": "cmd.exe", "cmd": "cmd.exe",
+            "powershell": "powershell.exe",
+            "任务管理器": "taskmgr.exe", "task manager": "taskmgr.exe",
+            "资源管理器": "explorer.exe", "文件资源管理器": "explorer.exe",
             "控制面板": "control",
             "截图工具": "snippingtool.exe",
-            "便签": "stikynot.exe",
-            "sticky notes": "stikynot.exe",
+            "便签": "stikynot.exe", "sticky notes": "stikynot.exe",
             "放大镜": "magnify.exe",
-            "录音机": "voice recorder",
-            "录音": "voice recorder",
-            "时钟": "clock",
-            "闹钟": "clock",
-            "设置": "ms-settings:",
-            "系统设置": "ms-settings:",
+            "录音机": "voice recorder", "录音": "voice recorder",
+            "时钟": "clock", "闹钟": "clock",
+            "设置": "ms-settings:", "系统设置": "ms-settings:",
         }
 
-        mapped = app_map.get(app.lower() if app.isascii() else app, None)
-        if mapped:
-            try:
-                if mapped.startswith("ms-settings:"):
-                    subprocess.Popen(f"start {mapped}", shell=True)
-                else:
-                    subprocess.Popen(mapped)
-                return f"已打开: {app}"
-            except Exception as e:
-                return f"打开 {app} 失败: {e}"
+        # 先在映射表里找
+        key = app.lower() if app.isascii() else app
+        exe_name = APP_MAP.get(key)
 
-        # 没匹配到已知应用名，尝试直接运行
+        if exe_name:
+            # 直接 exe 名（App Paths 注册表能找到）
+            try:
+                subprocess.Popen(f'cmd /c start "" "{exe_name}"', shell=True)
+                return f"已打开: {app}"
+            except:
+                pass
+
+        # 用 start + 中文名试试
         try:
-            subprocess.Popen(app)
-            return f"已尝试打开: {app}"
+            subprocess.Popen(f'cmd /c start "" "{app}"', shell=True)
+            return f"已打开: {app}"
+        except:
+            pass
+
+        # 搜开始菜单
+        search_dirs = [
+            os.path.expandvars(r"%APPDATA%\Microsoft\Windows\Start Menu\Programs"),
+            os.path.expandvars(r"%PROGRAMDATA%\Microsoft\Windows\Start Menu\Programs"),
+        ]
+        for sd in search_dirs:
+            if not os.path.exists(sd):
+                continue
+            for root, dirs, files in os.walk(sd):
+                for f in files:
+                    if f.endswith(".lnk") and (key in f.lower().replace(".lnk", "").replace(" ", "")):
+                        try:
+                            os.startfile(os.path.join(root, f))
+                            return f"已打开: {app}"
+                        except:
+                            continue
+                if len(dirs) > 100:
+                    break
+
+        return f"未找到: {app}"
+
+    def _control_window(self, action: str, target: str = "") -> str:
+        """控制已打开的窗口"""
+        import subprocess, time
+        try:
+            # 全局操作
+            if action in ("全部最小化", "minimize_all"):
+                subprocess.Popen("powershell -Command (New-Object -ComObject Shell.Application).MinimizeAll()", shell=True)
+                return "已全部最小化"
+            if action in ("显示桌面", "show_desktop"):
+                subprocess.Popen("powershell -Command (New-Object -ComObject Shell.Application).ToggleDesktop()", shell=True)
+                return "已显示桌面"
+            if not target:
+                return f"已执行: {action}"
+
+            # 用 pygetwindow 控制指定窗口
+            try:
+                import pygetwindow as gw
+                wins = gw.getWindowsWithTitle(target)
+                if not wins:
+                    return f"未找到标题包含 '{target}' 的窗口"
+                w = wins[0]
+                act = action
+                if act in ("最小化", "minimize"): w.minimize()
+                elif act in ("最大化", "maximize"): w.maximize()
+                elif act in ("关闭", "close", "关闭窗口"): w.close()
+                elif act in ("切换", "激活", "activate", "switch"): w.activate()
+                elif act in ("还原", "restore"): w.restore()
+                else: return f"不支持的操作: {act}"
+                return f"已{action}窗口: {target}"
+            except ImportError:
+                if action in ("关闭", "close", "关闭窗口"):
+                    subprocess.run(f"powershell -Command \"Get-Process | Where-Object {{$_.MainWindowTitle -like '*{target}*'}} | Stop-Process\"", shell=True, timeout=5)
+                    return f"已尝试关闭: {target}"
+                return f"需要安装 pygetwindow 库来{action}窗口"
         except Exception as e:
-            return f"无法打开 {app}，未知应用名。支持的计算器、记事本、画图、命令提示符等"
+            return f"窗口控制失败: {e}"
+
+    def _system_action(self, action: str, value: str = "") -> str:
+        """系统操作：音量、锁屏、截图等"""
+        import subprocess
+        try:
+            # ── 锁屏 ──
+            if action == "锁屏" or action == "lock":
+                subprocess.run("rundll32.exe user32.dll,LockWorkStation", shell=True)
+                return "已锁屏"
+
+            # ── 截图 ──
+            if action == "截图" or action == "screenshot":
+                subprocess.run("SnippingTool.exe", shell=True)
+                return "已打开截图工具"
+
+            # ── 音量控制 ──
+            if action == "静音" or action == "mute":
+                subprocess.run("nircmd muteappvolume sound 1", shell=True, capture_output=True) or \
+                subprocess.run("powershell -Command (New-Object -ComObject WScript.Shell).SendKeys([char]173)", shell=True)
+                return "已静音"
+
+            if action == "取消静音" or action == "unmute":
+                subprocess.run("nircmd muteappvolume sound 0", shell=True, capture_output=True) or \
+                subprocess.run("powershell -Command (New-Object -ComObject WScript.Shell).SendKeys([char]173)", shell=True)
+                return "已取消静音"
+
+            if "音量" in action or "vol" in action.lower():
+                # 音量增/减 + 数值
+                step = 10
+                if value:
+                    try:
+                        step = int(value)
+                    except ValueError:
+                        pass
+
+                if "增" in action or "up" in action.lower() or "大" in action:
+                    for _ in range(step // 2):
+                        subprocess.run("powershell -Command (New-Object -ComObject WScript.Shell).SendKeys([char]175)", shell=True, capture_output=True)
+                    return f"音量增加{step}"
+
+                if "减" in action or "down" in action.lower() or "小" in action:
+                    for _ in range(step // 2):
+                        subprocess.run("powershell -Command (New-Object -ComObject WScript.Shell).SendKeys([char]174)", shell=True, capture_output=True)
+                    return f"音量减少{step}"
+
+                # 设置具体音量值
+                try:
+                    target_vol = int(action.replace("音量", "").strip())
+                    subprocess.run(f"powershell -Command \"$k=[Math]::Round({target_vol}/100*65535); (New-Object -ComObject WScript.Shell).SendKeys([char]173)\"", shell=True, capture_output=True)
+                    return f"音量已设置为{target_vol}"
+                except:
+                    pass
+
+            # ── 关机/重启/睡眠 ──
+            if action == "关机" or action == "shutdown":
+                subprocess.run("shutdown /s /t 5", shell=True)
+                return "将在5秒后关机"
+
+            if action == "重启" or action == "restart":
+                subprocess.run("shutdown /r /t 5", shell=True)
+                return "将在5秒后重启"
+
+            if action == "睡眠" or action == "sleep":
+                subprocess.run("rundll32.exe powrprof.dll,SetSuspendState 0,1,0", shell=True)
+                return "已进入睡眠"
+
+            return f"未知系统操作: {action}"
+
+        except Exception as e:
+            return f"系统操作失败: {e}"
 
     def _save_code_block(self, content: str) -> str:
         """回退：从文本中检测代码块并保存"""
@@ -345,6 +546,20 @@ class LLM:
                 return "错误: 需要提供应用名称"
             return self._open_app(app)
 
+        if name == "control_window":
+            action = args.get("action", "")
+            target = args.get("target", "")
+            if not action:
+                return "错误: 需要提供操作"
+            return self._control_window(action, target)
+
+        if name == "system_action":
+            action = args.get("action", "")
+            value = args.get("value", "")
+            if not action:
+                return "错误: 需要提供操作"
+            return self._system_action(action, value)
+
         return f"错误: 未知工具 '{name}'"
 
     # ── 对话 ──────────────────────────────────────
@@ -358,33 +573,48 @@ class LLM:
                 "model": self.model,
                 "messages": [{"role": "system", "content": self.system_prompt}]
                            + self.history[-self.max_turns * 2:],
-                "stream": False,
+                "stream": True,
                 "tools": self._build_tools(),
             }
 
-            # 请求（含 3 次重试）
+            # 请求（含 3 次重试，streaming）
             for attempt in range(3):
                 try:
                     resp = self._requests.post(
-                        "http://localhost:11434/api/chat", json=payload, timeout=120
+                        "http://localhost:11434/api/chat", json=payload, timeout=120, stream=True
                     )
                     resp.raise_for_status()
-                    result = resp.json()
                     break
                 except self._requests.exceptions.ConnectionError:
                     time.sleep(1)
             else:
                 return "抱歉，Ollama 连接失败，请检查是否已启动。"
 
-            message = result.get("message", {})
-            reply = message.get("content", "") or ""
-            tool_calls = message.get("tool_calls", [])
+            # 流式读取响应
+            full_content = ""
+            tool_calls = None
+            for line in resp.iter_lines(decode_unicode=True):
+                if line:
+                    chunk = json.loads(line)
+                    delta = chunk.get("message", {})
+                    if delta.get("content"):
+                        full_content += delta["content"]
+                    if delta.get("tool_calls"):
+                        tool_calls = delta.get("tool_calls")
+                    if chunk.get("done"):
+                        break
+
+            reply = full_content
 
             # ── 主路径：Ollama 原生 tool_calls ──
             if tool_calls:
                 assistant_msg = {"role": "assistant", "content": reply}
                 assistant_msg["tool_calls"] = tool_calls
                 self.history.append(assistant_msg)
+
+                silent_tools = {"open_app", "control_window", "system_action"}
+                last_name = ""
+                last_result = ""
 
                 for tc in tool_calls:
                     func = tc.get("function", {})
@@ -402,17 +632,24 @@ class LLM:
                         "role": "tool",
                         "content": result_content,
                     })
+                    last_name = name
+                    last_result = result_content
 
+                # 操作类工具直接返回结果，不用 LLM 再废话
+                if last_name in silent_tools:
+                    return last_result
                 continue
 
             # ── 回退 1a：检测原生格式 tool_call JSON ──
-            # 格式：{"name":"get_weather","arguments":{"city":"北京"}}
             native_match = re.search(r'\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*(\{.*?\})\s*\}', reply)
             if native_match:
                 try:
                     name = native_match.group(1)
                     args = json.loads(native_match.group(2))
                     result_content = self._execute_tool(name, args)
+                    if name in {"open_app", "control_window", "system_action"}:
+                        self.history.append({"role": "user", "content": result_content})
+                        return result_content
                     self.history.append({
                         "role": "user",
                         "content": f"[工具结果] {result_content} 请据此回答用户。"
@@ -469,7 +706,7 @@ class TTS:
         """合成并播放语音（可从外部通过 sd.stop() 中断）"""
         if not text or not self.pipeline:
             return
-        generator = self.pipeline(text, voice="zf_xiaobei", speed=1.0)
+        generator = self.pipeline(text, voice="zf_xiaobei", speed=1.3)
         chunks = [audio for _, _, audio in generator]
         if not chunks:
             return
@@ -644,6 +881,8 @@ class App:
         self.conversation_mode = False  # 对话模式：唤醒后持续对话，说退出才结束
         self.sv = SpeakerVerifier()  # 声纹验证器
         self.owner_only = False  # 仅机主唤醒
+        self._stop_speech = threading.Event()  # 用于中断 TTS 播放
+        self._user_interrupted = False  # 用于记录是否真是用户打断
 
         self._build_ui()
 
@@ -851,8 +1090,121 @@ class App:
     def stop_playback(self):
         """中断当前语音播放和处理进程"""
         self._current_gen += 1
+        self._stop_speech.set()
         sd.stop()
         self.log("⏹️ 中断当前对话")
+
+    # ── TTS 播放中插嘴打断 ──────────────────────
+
+    def _play_tts_with_interrupt(self, text: str) -> bool:
+        """流式播放 TTS（生成一段播一段）+ 后台监听打断词，返回 True=用户打断"""
+        if not text or not self.tts or not self.tts.pipeline:
+            return False
+
+        self._stop_speech.clear()
+        self._user_interrupted = False
+
+        # 启动打断监听线程
+        listener_thread = threading.Thread(target=self._interrupt_listener_loop, daemon=True)
+        listener_thread.start()
+
+        # 流式合成+播放：生成一段立即播放，不等全部生成
+        generator = self.tts.pipeline(text, voice="zf_xiaobei", speed=1.3)
+        for gs, ps, audio in generator:
+            if self._stop_speech.is_set():
+                sd.stop()
+                break
+
+            # Kokoro 返回 torch tensor，转 numpy
+            if hasattr(audio, 'cpu'):
+                audio = audio.cpu().numpy()
+
+            # 增益放大
+            peak = np.max(np.abs(audio))
+            if peak > 0 and peak < 0.6:
+                audio = audio * (0.7 / peak)
+            audio = np.clip(audio, -1.0, 1.0)
+
+            sd.play(audio, samplerate=24000)
+            # 轮询等待播放结束（可被打断）
+            while sd.get_stream() and sd.get_stream().active:
+                if self._stop_speech.is_set():
+                    sd.stop()
+                    break
+                time.sleep(0.05)
+
+        self._stop_speech.set()
+        listener_thread.join(timeout=1.0)
+
+        return self._user_interrupted
+
+    def _interrupt_listener_loop(self):
+        """TTS 播放时后台监听打断词：结束/停止/闭嘴"""
+        import numpy as np
+        stop_q = queue.Queue()
+        chunks = []
+        speech_active = False
+
+        def callback(indata, frames, time_info, status):
+            if not self._stop_speech.is_set():
+                stop_q.put(indata.copy())
+
+        try:
+            with sd.InputStream(
+                samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE,
+                channels=1, dtype="float32", callback=callback
+            ):
+                max_chunks = int(1.5 * SAMPLE_RATE / BLOCK_SIZE)  # ~1.5秒检测一次
+
+                while not self._stop_speech.is_set():
+                    try:
+                        chunk = stop_q.get(timeout=0.2)
+                    except queue.Empty:
+                        continue
+
+                    flat = chunk.flatten()
+                    is_speech = self.vad.is_speech(flat)
+
+                    if is_speech:
+                        speech_active = True
+                        chunks.append(flat)
+
+                        if len(chunks) >= max_chunks:
+                            audio = np.concatenate(chunks)
+                            text = self.asr.transcribe(audio)
+                            chunks = []
+                            # 打断词：只停 TTS，不退出对话
+                            if any(w in text for w in ["停", "闭嘴", "别说了", "停下"]):
+                                self._stop_speech.set()
+                                self.root.after(0, lambda: self.log(f"⏹️ 语音打断: '{text}'"))
+                                return
+                            # 退出词：停 TTS + 退出对话模式
+                            if any(w in text for w in ["结束", "退出", "再见"]):
+                                self._user_interrupted = True
+                                self._stop_speech.set()
+                                self.root.after(0, lambda: self.log(f"⏹️ 退出对话: '{text}'"))
+                                return
+                    else:
+                        if speech_active and len(chunks) >= int(0.3 * SAMPLE_RATE / BLOCK_SIZE):
+                            # 静音了，检查刚说的
+                            audio = np.concatenate(chunks)
+                            text = self.asr.transcribe(audio)
+                            chunks = []
+                            speech_active = False
+                            if any(w in text for w in ["停", "闭嘴", "别说了", "停下"]):
+                                self._stop_speech.set()
+                                self.root.after(0, lambda: self.log(f"⏹️ 语音打断: '{text}'"))
+                                return
+                            if any(w in text for w in ["结束", "退出", "再见"]):
+                                self._user_interrupted = True
+                                self._stop_speech.set()
+                                self.root.after(0, lambda: self.log(f"⏹️ 退出对话: '{text}'"))
+                                return
+                        chunks = []
+                        speech_active = False
+        except Exception as e:
+            if not self._stop_speech.is_set():
+                self.log(f"⚠️ 打断监听异常: {e}")
 
     # ── 语音唤醒 ──────────────────────────────────
 
@@ -1159,9 +1511,19 @@ class App:
         """退出对话模式，回到唤醒待机状态"""
         self.conversation_mode = False
         self._current_gen += 1
+        my_gen = self._current_gen
         self.log("⏹️ 已退出对话模式")
-        # _safe_reset_btn 会自动处理 UI 重置和唤醒监听重启
-        self._safe_reset_btn(self._current_gen)
+        self.root.after(0, lambda: self._reset_after_exit(my_gen))
+
+    def _reset_after_exit(self, gen):
+        """退出对话模式后的 UI 重置（带 gen 保护）"""
+        if gen != self._current_gen:
+            return
+        self.record_btn.configure(text="🎤 按住说话", bg="#585b70")
+        self.status_bar.config(text="就绪 — 按住按钮说话，松手识别")
+        self.record_btn.configure(state="normal")
+        if self.wake_word_enabled and not self.recording:
+            self._start_wake_listener()
 
     def _on_wake_word_detected(self):
         """唤醒词检测到，进入对话模式"""
@@ -1301,6 +1663,7 @@ class App:
             if my_gen != self._current_gen:
                 return
             user_text = ""
+            interrupted = False
             try:
                 text = self.asr.transcribe(audio)
                 user_text = text
@@ -1327,19 +1690,21 @@ class App:
                 self.root.after(0, lambda: self.status_bar.config(text="播放语音..."))
                 self.root.after(0, lambda: self.log("🔊 合成语音并播放..."))
 
-                self.tts.speak(reply)
+                # 用可打断的播放替代直接 TTS，返回是否真是用户打断
+                interrupted = self._play_tts_with_interrupt(reply)
 
                 if my_gen != self._current_gen:
                     return
 
-                self.root.after(0, lambda: self.log("✅ 播放完成"))
+                if not interrupted:
+                    self.root.after(0, lambda: self.log("✅ 播放完成"))
             except Exception as e:
                 self.root.after(0, lambda e=e: self.log(f"❌ 处理出错: {e}"))
             finally:
                 if not self.conversation_mode or my_gen != self._current_gen:
                     self._safe_reset_btn(my_gen)
-                elif any(w in user_text for w in ["退出", "再见", "结束", "没有问题了", "就这些"]):
-                    self.log(f"⏹️ 检测到退出词 '{user_text}'，退出对话模式")
+                elif interrupted or any(w in user_text for w in ["退出", "再见", "结束", "没有问题了", "就这些"]):
+                    self.log(f"⏹️ 退出对话模式")
                     self.root.after(0, self._exit_conversation_mode)
                 else:
                     self.root.after(0, self._begin_conversation_round)
