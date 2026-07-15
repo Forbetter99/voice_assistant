@@ -1,0 +1,22 @@
+# ── 核心 ──
+sounddevice>=0.4.6
+soundfile>=0.12.1
+numpy>=1.24.0
+requests>=2.31.0
+
+# ── ASR / VAD / TTS ──
+torch>=2.0.0
+silero-vad>=5.0
+kokoro>=0.7.0
+
+# ── Windows 集成 ──
+pystray>=0.19.0
+Pillow>=9.0.0
+pywin32>=300
+plyer>=2.0
+
+# ── 可选的声纹验证 ──
+# wespeaker>=1.0
+
+# ── 打包 ──
+# pyinstaller>=5.0
