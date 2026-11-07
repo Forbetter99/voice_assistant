@@ -21,6 +21,6 @@ echo 手机在同一 WiFi 下访问: http://本机IP:8000
 echo 按 Ctrl+C 退出
 echo.
 
-python server.py
+"D:\anaconda3\envs\jarvis\python.exe" server.py
 
 pause

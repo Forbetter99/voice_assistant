@@ -18,10 +18,7 @@ class Config:
     RECORD_TIMEOUT = 8.0
     SILENCE_DURATION = 1.5
 
-    # STT
-    WHISPER_MODEL_SIZE = "small"  # tiny, base, small, medium, large
-    WHISPER_DEVICE = "cuda"
-    WHISPER_COMPUTE_TYPE = "int8_float16"
+    # STT（统一使用本地 Qwen3-ASR-1.7B，见 assistant/stt.py）
 
     # TTS
     TTS_VOICE = "zh-CN-XiaoxiaoNeural"

@@ -13,6 +13,7 @@ logs/
 .vscode/
 
 # 模型文件（大文件，不推送）
+models/
 models/SenseVoiceSmall/
 models/huggingface/
 models/torch/

@@ -1,8 +1,8 @@
 import torch
 print(f'PyTorch: {torch.__version__}, CUDA available: {torch.cuda.is_available()}')
 
-from faster_whisper import WhisperModel
-print('faster-whisper: OK')
+from qwen_asr import Qwen3ASRModel
+print('qwen-asr: OK')
 
 import sounddevice
 print('sounddevice: OK')
