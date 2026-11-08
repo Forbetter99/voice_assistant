@@ -1,7 +1,29 @@
+# ── 核心运行时 ──
 sounddevice>=0.4.6
 soundfile>=0.12.1
 numpy>=1.24.0
 requests>=2.31.0
 torch>=2.0.0
+torchaudio>=2.0.0        # silero_vad 顶层 import 它，不能缺
+
+# ── 语音识别 ASR: Qwen3-ASR-1.7B（8bit 显存约 2GB）──
+qwen-asr>=0.0.6
+transformers>=4.50.0
+accelerate>=0.30.0
+bitsandbytes>=0.43.0
+
+# ── VAD / 唤醒词 ──
 silero-vad>=5.0
+
+# ── 语音合成 TTS: Kokoro ──
 kokoro>=0.7.0
+
+# ── Windows 桌面集成（托盘 / 通知 / QQ音乐与B站自动化）──
+uiautomation>=2.0.20
+pillow>=10.0.0
+pystray>=0.19.0
+plyer>=2.1.0           # 可选：系统通知；缺失时自动降级
+pywin32>=306           # 可选：单实例互斥体、开机自启；缺失时自动降级
+
+# ── 打包（仅构建机需要）──
+# pyinstaller>=6.0

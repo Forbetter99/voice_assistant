@@ -6,6 +6,10 @@ dist/
 venv/
 logs/
 
+# PyInstaller 中间产物
+build/build/
+build/dist/
+
 # 环境 / IDE
 .env
 .venv

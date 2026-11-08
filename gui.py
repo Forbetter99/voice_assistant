@@ -9,8 +9,17 @@ import threading
 import time
 from pathlib import Path
 
-# ── 本地模型路径 ──
-_LOCAL_MODELS = Path(__file__).parent / "models"
+# ── 路径（兼容源码运行和 PyInstaller 打包）──
+_FROZEN = bool(getattr(sys, "frozen", False))
+_APP_DIR = Path(sys.executable).resolve().parent if _FROZEN else Path(__file__).resolve().parent
+# 打包后安装目录可能只读，生成文件/声纹写到用户目录
+_DATA_DIR = _APP_DIR if not _FROZEN else Path(os.environ.get("LOCALAPPDATA", str(_APP_DIR))) / "Jarvis"
+# 模型：优先程序目录 models/，其次 %LOCALAPPDATA%\Jarvis\models（安装包放在这里）
+_LOCAL_MODELS = _APP_DIR / "models"
+if not _LOCAL_MODELS.exists():
+    _user_models = _DATA_DIR / "models"
+    if _user_models.exists():
+        _LOCAL_MODELS = _user_models
 os.environ.setdefault("HF_HUB_CACHE", str(_LOCAL_MODELS / "huggingface"))
 os.environ.setdefault("TORCH_HOME", str(_LOCAL_MODELS / "torch"))
 
@@ -18,7 +27,9 @@ os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 # 所有模型已缓存，离线加载避免镜像不稳定导致崩溃
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
-sys.stdout.reconfigure(line_buffering=True)
+# 打包成无控制台窗口的 exe 时 sys.stdout 为 None
+if sys.stdout is not None:
+    sys.stdout.reconfigure(line_buffering=True)
 
 # 检测 Windows 系统代理设置是否有效
 def _apply_windows_proxy():
@@ -406,7 +417,7 @@ class LLM:
         return f"当前时间: {now.year}年{now.month}月{now.day}日 {wd} {now.hour:02d}:{now.minute:02d}:{now.second:02d}"
 
     def _save_code(self, filename: str, content: str, language: str = "") -> str:
-        out_dir = Path(__file__).parent / "generated"
+        out_dir = _DATA_DIR / "generated"
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / filename).write_text(content, encoding="utf-8")
         msg = f"代码已保存到 {filename}"
@@ -1220,7 +1231,7 @@ class LLM:
                     filename = lines[0][len(prefix):].strip()
                     code = "\n".join(lines[1:]).strip()
                     break
-            out_dir = Path(__file__).parent / "generated"
+            out_dir = _DATA_DIR / "generated"
             out_dir.mkdir(parents=True, exist_ok=True)
             (out_dir / filename).write_text(code, encoding="utf-8")
             saved.append(filename)
@@ -1500,7 +1511,7 @@ class SpeakerVerifier:
     def __init__(self):
         self.model = None
         self.embedding = None  # 机主声纹嵌入
-        self.embedding_path = Path(__file__).parent / "models" / "speaker_embedding.pt"
+        self.embedding_path = _LOCAL_MODELS / "speaker_embedding.pt"
         self._load_model()
 
     def _load_model(self):
@@ -1656,7 +1667,103 @@ class App:
         self._stop_speech = threading.Event()  # 用于中断 TTS 播放
         self._user_interrupted = False  # 用于记录是否真是用户打断
 
+        # ── 桌面集成 ──
+        self._exe_path = sys.executable if getattr(sys, "frozen", False) else None
+        self._tray = None
+        self._quitting = False
+        self._ollama = None
+
         self._build_ui()
+        # 关闭窗口 → 最小化到托盘（托盘不可用时直接退出）
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        # 托盘图标在后台线程启动
+        self.root.after(300, self._init_tray)
+        # Windows 11 圆角 / DWM 效果（窗口映射后生效）
+        self.root.after(500, self._apply_window_effects)
+
+    # ── 桌面集成 ──
+
+    def show(self):
+        """从托盘恢复窗口"""
+        def _show():
+            try:
+                self.root.deiconify()
+                self.root.lift()
+                self.root.focus_force()
+            except Exception:
+                pass
+        try:
+            self.root.after(0, _show)
+        except Exception:
+            pass
+
+    def _on_close(self):
+        """点击窗口关闭按钮：有托盘则缩到托盘，否则退出"""
+        if self._tray is not None:
+            self.root.withdraw()
+            try:
+                self._tray.notify("贾维斯仍在后台运行", "说“贾维斯”可唤醒，点击托盘图标恢复窗口")
+            except Exception:
+                pass
+        else:
+            self.shutdown()
+
+    def _init_tray(self):
+        """初始化系统托盘图标"""
+        try:
+            from jarvis.ui.tray import SystemTray
+            if getattr(sys, "frozen", False):
+                icon = Path(getattr(sys, "_MEIPASS", ".")) / "icon.png"
+            else:
+                icon = Path(__file__).resolve().parent / "build" / "icon.png"
+            self._tray = SystemTray(self, str(icon) if icon.exists() else None)
+            self._tray.start()
+            self.log("📌 托盘图标已就绪（关闭窗口会最小化到托盘）")
+        except Exception as e:
+            self._tray = None
+            print(f"  [托盘] 初始化失败: {e}")
+
+    def _apply_window_effects(self):
+        """应用 Windows 11 圆角与 DWM 窗口效果"""
+        try:
+            from jarvis.windows.dwm import DWM
+            DWM.set_rounded_corners(int(self.root.winfo_id()))
+        except Exception:
+            pass
+
+    def update_tray_menu(self):
+        """状态变化时刷新托盘菜单（勾选状态）"""
+        if self._tray is not None:
+            self._tray.update_menu()
+
+    def shutdown(self):
+        """完整退出程序（可从托盘线程调用）"""
+        try:
+            self.root.after(0, self._do_shutdown)
+        except Exception:
+            self._do_shutdown()
+
+    def _do_shutdown(self):
+        if self._quitting:
+            return
+        self._quitting = True
+        try:
+            self.wake_word_enabled = False
+            self._stop_wake.set()
+            self._stop_speech.set()
+            self.recording = False
+        except Exception:
+            pass
+        if self._tray is not None:
+            try:
+                self._tray.stop()
+            except Exception:
+                pass
+        try:
+            self.root.quit()
+            self.root.destroy()
+        except Exception:
+            pass
 
     def _build_ui(self):
         # 标题
@@ -2116,6 +2223,7 @@ class App:
             self._stop_wake.set()
             self.wake_btn.config(text="🤖 语音唤醒", bg="#45475a", fg="#a6adc8")
             self.log("⏹️ 语音唤醒已关闭")
+            self.update_tray_menu()
             # 如果在对话模式中，一并退出
             if self.conversation_mode:
                 self._current_gen += 1
@@ -2128,6 +2236,7 @@ class App:
         self._stop_wake.clear()
         self.wake_btn.config(text="🔊 聆听中...", bg="#a6e3a1", fg="#11111b")
         self.log("🔊 语音唤醒已开启，说'贾维斯'唤醒")
+        self.update_tray_menu()
         self._start_wake_listener()
 
     def _start_wake_listener(self):
@@ -2498,7 +2607,34 @@ class App:
         self.root.after(0, reset)
 
 
+_instance_guard = None  # 单实例互斥体，保持引用防止被回收
+
+
 def main():
+    global _instance_guard
+
+    # ── 单实例检测（无 pywin32 时自动跳过）──
+    try:
+        from jarvis.windows.integration import SingleInstance
+        _instance_guard = SingleInstance()
+        if _instance_guard.already_running:
+            import tkinter.messagebox as messagebox
+            _tmp = tk.Tk()
+            _tmp.withdraw()
+            messagebox.showinfo("贾维斯", "贾维斯已经在运行了，请在系统托盘里查看。")
+            _tmp.destroy()
+            return
+    except Exception:
+        _instance_guard = None
+
+    # ── 后台确保 Ollama 服务已启动 ──
+    try:
+        from jarvis.windows.integration import OllamaManager
+        _ollama = OllamaManager()
+        threading.Thread(target=_ollama.ensure_running, daemon=True).start()
+    except Exception:
+        pass
+
     root = tk.Tk()
     app = App(root)
     root.app = app
